@@ -90,8 +90,23 @@ type login struct {
 }
 
 type guild struct {
-	Name  string             `form:"name" json:"name" binding:"required"`
-	Owner primitive.ObjectID `form:"owner" json:"owner" `
+	Name  string      `form:"name" json:"name" binding:"required"`
+	Owner interface{} `form:"owner" json:"owner" `
+}
+
+type channel struct {
+	Name  string      `form:"name" json:"name" binding:"required"`
+	Owner interface{} `form:"owner" json:"owner" `
+}
+
+type submitFormat struct {
+	Title     string      `form:"title" json:"title" binding:"required"`
+	GuildID   string      `form:"guildID" json:"guildID" binding:"required"`
+	Lead      string      `form:"lead" json:"lead"`
+	Link      string      `form:"link" json:"link"`
+	Picture   string      `form:"picture" json:"picture"`
+	Owner     interface{} `form:"owner" json:"owner" `
+	OwnerName string      `form:"ownername" json:"ownername" `
 }
 
 // User demo
@@ -129,6 +144,7 @@ func authCallback(c *gin.Context) (interface{}, error) {
 	password := loginVals.Password
 	username := loginVals.Username
 
+	//Register
 	if username != "" {
 		var result bson.M
 
@@ -138,7 +154,11 @@ func authCallback(c *gin.Context) (interface{}, error) {
 
 			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, err := userCollection.InsertOne(ctx, loginVals)
+			res, err := userCollection.InsertOne(ctx, loginVals)
+
+			guildID := generateGuild("动态", res.InsertedID)
+
+			insertGuild(res.InsertedID, guildID)
 
 			if err != nil {
 				log.Fatal(err)
@@ -172,8 +192,6 @@ func userInfo(c *gin.Context) {
 
 	userCollection := connectDB("user")
 
-	guildsCollection := connectDB("guilds")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -183,27 +201,117 @@ func userInfo(c *gin.Context) {
 		log.Fatal(err)
 	}
 
-	var guilds primitive.A
+	c.JSON(200, result)
+}
 
-	if guildsID, ok := (result["guilds"]).(primitive.A); ok {
-		for _, guildID := range guildsID {
+func generateGuild(name string, owner interface{}) interface{} {
+	guildsCollection := connectDB("guilds")
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+	var guildVals guild
 
-			var guild bson.M
-			err = guildsCollection.FindOne(ctx, bson.M{"_id": guildID}).Decode(&guild)
-			if err != nil {
-				log.Fatal(err)
-			}
+	guildVals.Name = name
 
-			guilds = append(guilds, guild)
+	guildVals.Owner = owner
 
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	res, err := guildsCollection.InsertOne(ctx, guildVals)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	c.JSON(200, bson.M{"username": result["username"], "guilds": guilds})
+	guildID := res.InsertedID
 
+	channelID := generateChannel("动态", guildID)
+
+	insertChannel(guildID, channelID)
+
+	channelID = generateChannel("群聊", guildID)
+
+	insertChannel(guildID, channelID)
+
+	return guildID
+}
+
+func insertGuild(owner interface{}, guildID interface{}) {
+	userCollection := connectDB("user")
+	guildsCollection := connectDB("guilds")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var guild bson.M
+	err := guildsCollection.FindOne(ctx, bson.M{"_id": guildID}).Decode(&guild)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	filter := bson.D{primitive.E{Key: "_id", Value: owner}}
+	update := bson.D{primitive.E{Key: "$push", Value: bson.D{primitive.E{Key: "guilds", Value: guild}}}}
+
+	_, err = userCollection.UpdateOne(context.TODO(), filter, update)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+//owner should be the ID of guild
+func generateChannel(name string, owner interface{}) interface{} {
+	channelssCollection := connectDB("channels")
+
+	var channelVals channel
+
+	channelVals.Name = name
+
+	channelVals.Owner = owner
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	res, err := channelssCollection.InsertOne(ctx, channelVals)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return res.InsertedID
+}
+
+func insertChannel(owner interface{}, ChannelID interface{}) {
+
+	guildCollection := connectDB("guilds")
+	channelssCollection := connectDB("channels")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var channel bson.M
+	err := channelssCollection.FindOne(ctx, bson.M{"_id": ChannelID}).Decode(&channel)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	filter := bson.D{primitive.E{Key: "_id", Value: owner}}
+	update := bson.D{primitive.E{Key: "$push", Value: bson.D{primitive.E{Key: "channels", Value: channel}}}}
+
+	_, err = guildCollection.UpdateOne(context.TODO(), filter, update)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func generateMoment(moment submitFormat) interface{} {
+	momentsCollection := connectDB("moments")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	res, err := momentsCollection.InsertOne(ctx, moment)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return res.InsertedID
 }
 
 func guilds(c *gin.Context) {
@@ -215,8 +323,6 @@ func guilds(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "wrong format"})
 		return
 	}
-
-	guildsCollection := connectDB("guilds")
 
 	userCollection := connectDB("user")
 
@@ -233,26 +339,104 @@ func guilds(c *gin.Context) {
 		guildVals.Owner = owner
 	}
 
-	// log.Println(guildVals.Owner)
-	// log.Println(reflect.TypeOf(result["_id"]))
+	guildID := generateGuild(guildVals.Name, guildVals.Owner)
 
-	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	res, err := guildsCollection.InsertOne(ctx, guildVals)
-	if err != nil {
-		log.Fatal(err)
-	}
-	guildID := res.InsertedID
-
-	filter := bson.D{primitive.E{Key: "_id", Value: guildVals.Owner}}
-	update := bson.D{primitive.E{Key: "$push", Value: bson.D{primitive.E{Key: "guilds", Value: guildID}}}}
-
-	_, err = userCollection.UpdateOne(context.TODO(), filter, update)
-	if err != nil {
-		log.Fatal(err)
-	}
+	insertGuild(guildVals.Owner, guildID)
 
 	c.JSON(200, gin.H{"guildID": guildID})
+}
+
+func submit(c *gin.Context) {
+	claims := jwt.ExtractClaims(c)
+
+	var submitVals submitFormat
+
+	if err := c.ShouldBind(&submitVals); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "wrong format"})
+		return
+	}
+
+	userCollection := connectDB("user")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var result bson.M
+	err := userCollection.FindOne(ctx, bson.M{"tel": claims[identityKey]}).Decode(&result)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if owner, ok := (result["_id"]).(primitive.ObjectID); ok {
+		submitVals.Owner = owner
+	}
+
+	if ownername, ok := (result["username"]).(string); ok {
+		submitVals.OwnerName = ownername
+	}
+
+	momentID := generateMoment(submitVals)
+
+	c.JSON(200, gin.H{"momentID": momentID})
+}
+
+func isUser(c *gin.Context) bool {
+	claims := jwt.ExtractClaims(c)
+
+	userCollection := connectDB("user")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var result bson.M
+	err := userCollection.FindOne(ctx, bson.M{"tel": claims[identityKey]}).Decode(&result)
+	if err != nil {
+		return false
+	}
+
+	return true
+}
+
+func moments(c *gin.Context) {
+
+	// if !isUser(c) {
+	// 	c.JSON(http.StatusForbidden, gin.H{"status": "error", "error": "No user"})
+	// 	return
+	// }
+
+	log.Println(c.Request)
+
+	guildID := c.Query("guildID")
+
+	log.Println(guildID)
+
+	momentsCollection := connectDB("moments")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cur, err := momentsCollection.Find(ctx, bson.M{"guildid": guildID})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cur.Close(ctx)
+
+	var results []bson.M
+	for cur.Next(ctx) {
+		var result bson.M
+		err := cur.Decode(&result)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		results = append(results, result)
+	}
+	if err := cur.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "result": results})
+
 }
 
 func setupRouter() *gin.Engine {
@@ -302,6 +486,10 @@ func setupRouter() *gin.Engine {
 		api.GET("/info", userInfo)
 
 		api.POST("/guilds", guilds)
+
+		api.POST("/submit", submit)
+
+		api.GET("/moments", moments)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
